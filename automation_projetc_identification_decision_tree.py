@@ -8,7 +8,6 @@ Original file is located at
 """
 
 # Installing TPOT
-!pip install tpot
 !pip install sklearn-genetic-opt
 
 # Importing necessary libraries
