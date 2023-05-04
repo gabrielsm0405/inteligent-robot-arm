@@ -20,41 +20,40 @@ except:
     print ('--------------------------------------------------------------')
     print ('')
 
-import time
 import math
-import threading
+from joblib import load
+import numpy as np
+import warnings
+warnings.filterwarnings('ignore')
 
-def moveToConfig(handles,maxVel,maxAccel,targetConf):
-    threads = list()
-    for i in range(len(handles)):
-        currentConf = sim.simxGetJointPosition(clientID, handles[i], sim.simx_opmode_blocking)[1]
-        x = threading.Thread(target=movCallback, args=(currentConf, targetConf[i], maxVel[i], maxAccel[i],handles[i], i))
-        threads.append(x)
-        x.start()
-    
-    for thread in threads:
-        thread.join()
+identification_model = load('random_forest_identification.joblib')
+learning_model = load('learning_model3.joblib')
 
-def movCallback(currentConf, config,vel,accel,handle, id):
-    interval = 0.001
-    diff = 999
-    t = 0
-    vel = vel * (math.pi/180)
-    accel = accel * (math.pi/180)
-    while diff >= 0.05 or diff <= -0.05:
-        diff = config*(math.pi/180) - currentConf
+vel=180
+accel=90
 
-        deltaS = vel*t + (accel*(t**2))/2
+def moveToConfig(handles,gripperHandle, cuboidHandle, precision):
+    curTarget = sim.simxGetObjectPosition(clientID, cuboidHandle, -1, sim.simx_opmode_blocking)[1]
+    error = 999
+    delta = 0.01
+    while error > precision:
+        anglesPred = learning_model.predict([curTarget])[0].tolist()
+        for i in range(len(handles)):
+            currentConf = sim.simxGetJointPosition(clientID, handles[i], sim.simx_opmode_blocking)[1]
+            diff = anglesPred[i]*(math.pi/180) - currentConf
+            if diff > 0:
+                sim.simxSetJointTargetPosition(clientID, handles[i], currentConf+delta, sim.simx_opmode_oneshot)
+            else:
+                sim.simxSetJointTargetPosition(clientID, handles[i], currentConf-delta, sim.simx_opmode_oneshot)
         
-        if diff > 0.05:
-            currentConf = currentConf+deltaS
-            sim.simxSetJointPosition(clientID, handle, currentConf, sim.simx_opmode_blocking)
-        elif diff < -0.05:
-            currentConf = currentConf-deltaS
-            sim.simxSetJointPosition(clientID, handle, currentConf, sim.simx_opmode_blocking)
-        t = t + interval
-        time.sleep(interval)
-    return
+        output = sim.simxGetObjectPosition(clientID, gripperHandle, -1, sim.simx_opmode_blocking)[1]
+        pred_output = identification_model.predict([anglesPred])[0].tolist()
+        feedback = np.subtract(output, pred_output).tolist()
+        reference = sim.simxGetObjectPosition(clientID, cuboidHandle, -1, sim.simx_opmode_blocking)[1]
+
+        curTarget = np.subtract(reference, feedback).tolist()
+
+        error = np.linalg.norm(np.subtract(output, reference))   
         
 
 print ('Program started')
@@ -69,22 +68,31 @@ if clientID!=-1:
     jointHandles[1] = sim.simxGetObjectHandle(clientID, "/joint/joint", sim.simx_opmode_blocking)[1]
     jointHandles[2] = sim.simxGetObjectHandle(clientID, "/joint/joint/joint", sim.simx_opmode_blocking)[1]
     jointHandles[3] = sim.simxGetObjectHandle(clientID, "/joint/joint/joint/joint", sim.simx_opmode_blocking)[1]
-    
-    vel=360  
-    accel=40
-    jerk=80
-    maxVel=[vel,vel,vel,vel]
-    maxAccel=[accel,accel,accel,accel]
+    gripperHandle = sim.simxGetObjectHandle(clientID, "/PhantomXPincher/gripperCenter_joint", sim.simx_opmode_blocking)[1]
+    gripperCloseHandle = sim.simxGetObjectHandle(clientID, "/PhantomXPincher/gripperClose_joint", sim.simx_opmode_blocking)[1]
+    cuboidHandle = sim.simxGetObjectHandle(clientID, "/Cuboid", sim.simx_opmode_blocking)[1]
+    cupHandle = sim.simxGetObjectHandle(clientID, "/Disc", sim.simx_opmode_blocking)[1]
 
-    targetPos=[0, 30, 45, 60]
-    moveToConfig(jointHandles,maxVel,maxAccel,targetPos)
-    targetPos=[0, 30, 45, 0]
-    moveToConfig(jointHandles,maxVel,maxAccel,targetPos)
-    targetPos=[0, 0, 0, 0]
-    moveToConfig(jointHandles,maxVel,maxAccel,targetPos)
+    sim.simxSetInt32Signal(clientID, 'PhantomXPincher__15___gripperClose', 0, sim.simx_opmode_blocking)
 
-    # Before closing the connection to CoppeliaSim, make sure that the last command sent out had time to arrive. You can guarantee this with (for example):
-    sim.simxGetPingTime(clientID)
+    moveToConfig(
+        jointHandles,
+        gripperHandle,
+        cuboidHandle,
+        0.03
+    )
+
+    print("close gripper")
+    sim.simxSetInt32Signal(clientID, 'PhantomXPincher__15___gripperClose', 1, sim.simx_opmode_blocking)
+
+    moveToConfig(
+        jointHandles,
+        gripperHandle,
+        cupHandle,
+        0.07
+    )
+
+    sim.simxSetInt32Signal(clientID, 'PhantomXPincher__15___gripperClose', 0, sim.simx_opmode_blocking)
 
     # Now close the connection to CoppeliaSim:
     sim.simxFinish(clientID)
